@@ -1,0 +1,4 @@
+The dataset, dblp-v10.csv, is sourced from Kaggle at https://www.kaggle.com/datasets/nechbamohammed/research-papers-dataset. 
+
+The original data here is not totally functional; there are some missing values. 
+We need this dataset clean and reduced such that each entry has valid values for title, abstract, id, and references.

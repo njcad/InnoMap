@@ -1,0 +1,5 @@
+# don't track datasets 
+data/*.csv
+
+# don't track venv
+venv/
