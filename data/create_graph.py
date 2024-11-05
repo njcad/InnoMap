@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 from torch_geometric.data import Data
 from transformers import AutoTokenizer, AutoModel
+import torch.nn.functional as F
 from tqdm import tqdm
 import ast
 
@@ -73,9 +74,15 @@ for idx, row in combined_df.iterrows():
 # Convert edge_index to a tensor
 edge_index = torch.tensor(edge_index, dtype=torch.long) #made long since colab did so too lol...
 
+### OLD METHOD 
 # Load a basic Hugging Face encoder (e.g., DistilBERT)
-tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
-model = AutoModel.from_pretrained('distilbert-base-uncased')
+# tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
+# model = AutoModel.from_pretrained('distilbert-base-uncased')
+
+
+### NEW METHOD: nvidia NV-Embed-v2
+model = AutoModel.from_pretrained('nvidia/NV-Embed-v2', trust_remote_code=True)
+max_length = 32768
 
 # Prepare a list to hold node features
 node_features = []
@@ -93,15 +100,24 @@ for idx, row in tqdm(combined_df.iterrows(), total=len(combined_df)):
     title = str(row['title'])
     abstract = str(row['abstract'])
     text = title + ' ' + abstract # just concat the title and abstract with a space in between for now
-    # Tokenize and encode the text
-    inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
-    # Move input tensors to same device as model
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-    with torch.no_grad():
-        outputs = model(**inputs)
-        # Use the [CLS] token representation as the embedding
-        embeddings = outputs.last_hidden_state[:, 0, :]
-        node_features.append(embeddings.cpu().squeeze(0))  # Move back to CPU for storage
+
+    ### NEW METHOD: NV-Embed-v2
+    embeddings = model.encode(text, instruction="", max_length=max_length)
+    embeddings = F.normalize(embeddings, p=2, dim=1)
+    print(embeddings.shape)
+    node_features.append(embeddings.cpu().squeeze(0))
+
+
+    ### OLD METHOD
+    # # Tokenize and encode the text
+    # inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
+    # # Move input tensors to same device as model
+    # inputs = {k: v.to(device) for k, v in inputs.items()}
+    # with torch.no_grad():
+    #     outputs = model(**inputs)
+    #     # Use the [CLS] token representation as the embedding
+    #     embeddings = outputs.last_hidden_state[:, 0, :]
+    #     node_features.append(embeddings.cpu().squeeze(0))  # Move back to CPU for storage
 
 # Stack node features into a tensor
 x = torch.stack(node_features)
