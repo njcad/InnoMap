@@ -1,6 +1,73 @@
-# don't track datasets 
-data/csvs/*.csv
-data/graphs/*.pt
+# src/dataset.py
 
-# don't track venv
-venv/
+import torch
+from torch_geometric.data import Data
+from torch_geometric.transforms import RandomLinkSplit
+from torch_geometric.loader import LinkNeighborLoader
+
+class CitationDataset:
+    def __init__(self, data_path, batch_size=64, num_neighbors=[10, 10], device='cpu'):
+        self.data_path = data_path
+        self.batch_size = batch_size
+        self.num_neighbors = num_neighbors
+        self.device = torch.device(device)
+
+        # Load the preprocessed graph data
+        self.data = torch.load(self.data_path)
+        self.data.num_nodes = self.data.x.size(0)
+
+        # Split the data into training, validation, and test sets
+        self._split_data()
+
+        # Create data loaders
+        self._create_loaders()
+
+    def _split_data(self):
+        # Perform a random link split for link prediction
+        transform = RandomLinkSplit(
+            num_val=0.1,
+            num_test=0.1,
+            is_undirected=False,    # Set to True if your graph is undirected
+            add_negative_train_samples=True,
+            split_labels=True
+        )
+        self.train_data, self.val_data, self.test_data = transform(self.data)
+
+    def _create_loaders(self):
+        # Create data loaders for training, validation, and testing
+        self.train_loader = LinkNeighborLoader(
+            data=self.train_data,
+            num_neighbors=self.num_neighbors,
+            edge_label_index=self.train_data.edge_label_index,
+            edge_label=self.train_data.edge_label,
+            batch_size=self.batch_size,
+            shuffle=True
+        )
+
+        self.val_loader = LinkNeighborLoader(
+            data=self.val_data,
+            num_neighbors=self.num_neighbors,
+            edge_label_index=self.val_data.edge_label_index,
+            edge_label=self.val_data.edge_label,
+            batch_size=self.batch_size,
+            shuffle=False
+        )
+
+        self.test_loader = LinkNeighborLoader(
+            data=self.test_data,
+            num_neighbors=self.num_neighbors,
+            edge_label_index=self.test_data.edge_label_index,
+            edge_label=self.test_data.edge_label,
+            batch_size=self.batch_size,
+            shuffle=False
+        )
+
+    def get_loaders(self):
+        return self.train_loader, self.val_loader, self.test_loader
+
+    def get_data(self):
+        return self.data
+
+# Usage example:
+# dataset = CitationDataset(data_path='./graphs/first_10_5.pt', batch_size=64, device='cuda')
+# train_loader, val_loader, test_loader = dataset.get_loaders()
