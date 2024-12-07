@@ -49,6 +49,7 @@ class CitationDataset(Dataset):
         else:
             # For validation and testing, we can prepare data similarly or use predefined splits
             pass  # Implement as needed
+            #TODO: IMPLEMENT VALIDATION AND TESTING DATASET
 
     def __len__(self):
         return len(self.pairs)

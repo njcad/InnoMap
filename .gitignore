@@ -5,3 +5,10 @@ data/graphs/*.pt
 
 # don't track venv
 venv/
+# don't track datasets 
+data/*.csv
+data/csvs/*.csv
+data/graphs/*.pt
+
+# don't track venv
+venv/

@@ -21,7 +21,7 @@ import ast
 # }
 
 # # Read the cleaned data
-data_clean_path = './csvs/data_clean.csv'
+data_clean_path = './data_clean.csv'
 df = pd.read_csv(data_clean_path)
 # initial_df = df.head(args['num_initial_papers'])
 
@@ -106,7 +106,7 @@ device = torch.device('mps') if torch.backends.mps.is_available() else torch.dev
 print(f"Using device: {device}")
 model = model.to(device)  # Move model to GPU if available
 
-batch_size = 32  # Define a batch size for encoding
+batch_size = 128  # Define a batch size for encoding
 texts = []
 
 for idx, row in tqdm(combined_df.iterrows(), total=len(combined_df)):

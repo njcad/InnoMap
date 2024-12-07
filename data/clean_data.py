@@ -7,10 +7,16 @@ Produces clean csv file containing only entries from dblp-v10.csv that have vali
     4. ID
 """
 
-import pandas as pd 
+import pandas as pd
+import kagglehub
+
+# Download latest version
+path = kagglehub.dataset_download("nechbamohammed/research-papers-dataset")
+
+print("Path to dataset files:", path)
 
 # read in un-clean dataset
-dblp_path = "dblp-v10.csv"
+dblp_path = f"{path}/dblp-v10.csv"
 df = pd.read_csv(dblp_path)
 
 # filter on these categories

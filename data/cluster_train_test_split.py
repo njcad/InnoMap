@@ -6,7 +6,7 @@ import numpy as np
 
 def load_and_split_graph(path, test_size=0.2, random_state=42, num_parts=50):
     # Load the full graph
-    graph = torch.load(path)
+    graph = torch.load(path, )
 
     # Use ClusterData to partition the graph into connected clusters.
     # This helps ensure that the train/test subgraphs are more "connected"
