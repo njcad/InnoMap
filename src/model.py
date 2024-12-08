@@ -16,13 +16,16 @@ class GCNLinkPredictor(torch.nn.Module):
 
         # MLP layer for link prediction
         self.link_predictor = torch.nn.Sequential(
-            torch.nn.Linear(2 * out_channels, hidden_channels),
+            torch.nn.Linear(in_channels + out_channels, hidden_channels),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_channels, 1),
             torch.nn.Sigmoid()
         )
 
     def forward(self, x, edge_index, node_pairs):
+        # Grab the target embeddings FIRST (as the LLM embeddings)
+        target_emb = x[node_pairs[:, 1]]
+
         # GCN layers
         x = self.conv1(x, edge_index)
         x = F.relu(x)
@@ -30,7 +33,7 @@ class GCNLinkPredictor(torch.nn.Module):
 
         # Extract embeddings for node pairs
         source_emb = x[node_pairs[:, 0]]
-        target_emb = x[node_pairs[:, 1]]
+        
 
         # Predict link probability
         edge_emb = torch.cat([source_emb, target_emb], dim=1)

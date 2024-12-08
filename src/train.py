@@ -1,95 +1,102 @@
-# src/train.py
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score
-
-# import our model from model.py
+from torch_geometric.loader import NeighborLoader
 from model import GCNLinkPredictor
-
+from tqdm import tqdm
 
 def sample_negative_edges(num_nodes, edge_index, num_samples):
-    """
-    Sample random negative edges (non-existent links).
-    :param num_nodes: Number of nodes in the graph.
-    :param edge_index: Tensor of existing edges.
-    :param num_samples: Number of negative edges to sample.
-    :return: Tensor of negative edges.
-    """
-    edge_set = set([tuple(edge) for edge in edge_index.t().tolist()])
+    edge_set = set([tuple(e) for e in edge_index.t().tolist()])
     negative_edges = []
     while len(negative_edges) < num_samples:
         u, v = torch.randint(0, num_nodes, (2,))
-        if (u.item(), v.item()) not in edge_set and (v.item(), u.item()) not in edge_set:
+        if (u.item(), v.item()) not in edge_set and (v.item(), u.item()) not in edge_set and u.item() != v.item():
             negative_edges.append((u.item(), v.item()))
     return torch.tensor(negative_edges, dtype=torch.long)
 
+def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16, num_neighbors=[10,10]):
+    train_loader = NeighborLoader(
+        graph,
+        num_neighbors=num_neighbors,
+        batch_size=batch_size,
+        input_nodes=None, 
+        shuffle=True
+    )
 
-def train(model, data, optimizer, num_epochs):
-    """
-    Train the GCN model for link prediction.
-    :param model: GCN model instance.
-    :param data: PyTorch Geometric Data object.
-    :param optimizer: Optimizer for training.
-    :param num_epochs: Number of training epochs.
-    """
     for epoch in range(num_epochs):
         model.train()
-        optimizer.zero_grad()
+        total_loss = 0.0
+        total_auc = 0.0
+        count = 0
 
-        # Sample positive and negative edges
-        pos_edges = data.edge_index.t()  # Positive edges
-        neg_edges = sample_negative_edges(data.num_nodes, data.edge_index, pos_edges.size(0))
+        with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/{num_epochs}", unit='batch') as pbar:
+            for step, batch_data in enumerate(train_loader):
+                pos_edges = batch_data.edge_index
+                neg_edges = sample_negative_edges(batch_data.num_nodes, pos_edges, pos_edges.size(1))
+                neg_edges = neg_edges.t()
 
-        # Combine edges and labels
-        all_edges = torch.cat([pos_edges, neg_edges], dim=0)
-        labels = torch.cat([torch.ones(pos_edges.size(0)), torch.zeros(neg_edges.size(0))])
+                all_edges = torch.cat([pos_edges, neg_edges], dim=1)
+                labels = torch.cat([
+                    torch.ones(pos_edges.size(1), device=batch_data.x.device),
+                    torch.zeros(neg_edges.size(1), device=batch_data.x.device)
+                ])
 
-        # Forward pass and loss computation
-        link_probs = model(data.x, data.edge_index, all_edges)
-        loss = F.binary_cross_entropy(link_probs, labels)
+                optimizer.zero_grad()
+                link_probs = model(batch_data.x, batch_data.edge_index, all_edges.t()).squeeze()
+                loss = F.binary_cross_entropy(link_probs, labels)
+                loss.backward()
+                optimizer.step()
 
-        # Backpropagation
-        loss.backward()
-        optimizer.step()
+                auc = roc_auc_score(labels.cpu().numpy(), link_probs.detach().cpu().numpy())
+                total_loss += loss.item()
+                total_auc += auc
+                count += 1
 
-        # Evaluate on training set
-        with torch.no_grad():
-            auc = roc_auc_score(labels.cpu(), link_probs.cpu())
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.4f}, AUC: {auc:.4f}")
+                pbar.update(1)
+                # Update postfix only every 1000 steps to avoid too frequent updates
+                if (step + 1) % 1000 == 0:
+                    avg_loss = total_loss / count
+                    avg_auc = total_auc / count
+                    pbar.set_postfix(loss=f"{avg_loss:.4f}", auc=f"{avg_auc:.4f}")
 
+        # Print/checkpoint every 5 epochs
+        avg_loss = total_loss / count
+        avg_auc = total_auc / count
+        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}, AUC: {avg_auc:.4f}")
+        checkpoint_path = f"../checkpoints/model_epoch_{epoch+1}.pth"
+        torch.save(model.state_dict(), checkpoint_path)
+        print(f"Checkpoint saved to {checkpoint_path}")
 
-# === INFERENCE ===
-def predict_links(model, data, new_paper_embedding=None):
-    """
-    Predict links for a new paper or existing graph.
-    :param model: Trained GCN model.
-    :param data: PyTorch Geometric Data object.
-    :param new_paper_embedding: Embedding of the new paper (optional).
-    :return: Predicted link probabilities for all candidate edges.
-    """
-    model.eval()
-
-    if new_paper_embedding is not None:
-        # Add new paper embedding as a new node
-        new_embedding = torch.tensor(new_paper_embedding, dtype=torch.float).unsqueeze(0)
-        data.x = torch.cat([data.x, new_embedding], dim=0)
-        new_node_idx = data.x.size(0) - 1
-        candidate_edges = torch.tensor([[new_node_idx, i] for i in range(new_node_idx)], dtype=torch.long)
-    else:
-        # Predict links for all pairs in the existing graph
-        candidate_edges = torch.cartesian_prod(torch.arange(data.num_nodes), torch.arange(data.num_nodes))
-
-    with torch.no_grad():
-        link_probs = model(data.x, data.edge_index, candidate_edges)
-    return link_probs
-
-
+    checkpoint_path = f"../checkpoints/model_epoch_{num_epochs}.pth"
+    torch.save(model.state_dict(), checkpoint_path)
 
 def main():
-    """
-    Main script to actually run the thing.
-    """
-    
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(42)
+
+    data_path = "../data/graphs/full.pt"
+    graph = torch.load(data_path)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    graph = graph.to(device)
+    print(f"Using device: {device}")
+
+    model = GCNLinkPredictor(
+        in_channels=graph.x.size(-1), 
+        hidden_channels=64,
+        out_channels=32,
+    ).to(device)
+    print("Model initialized")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    print("Optimizer initialized")
+
+    train_with_neighborloader(model, graph, optimizer, num_epochs=100, batch_size=16, num_neighbors=[10,10])
+    print("Training completed")
+
+if __name__ == "__main__":
+    main()
 
 
 
@@ -97,107 +104,20 @@ def main():
 
 
 
-
-
-
-### NOTE: same story, commented out code below might work, but just testing this stuff
-
-
-# import torch
-# import torch.nn.functional as F
-# from torch.optim import Adam
-# from tqdm import tqdm
-
-# from dataset import get_dataloader
-# from model import GCNEncoder, EdgePredictor, GCNLinkPredictor
-
-# def train_model(config):
-#     # Configuration parameters
-#     data_path = config['data_path']
-#     batch_size = config['batch_size']
-#     device = torch.device(config['device'])
-#     num_epochs = config['num_epochs']
-#     learning_rate = config['learning_rate']
-#     encoder_hidden_channels = config['encoder_hidden_channels']
-#     encoder_out_channels = config['encoder_out_channels']
-#     predictor_hidden_channels = config['predictor_hidden_channels']
-    
-#     # Initialize dataloader
-#     train_loader = get_dataloader(
-#         data_path=data_path,
-#         batch_size=batch_size,
-#         num_negative_samples=config.get('num_negative_samples', 1),
-#         mode='train'
-#     )
-#     data = train_loader.dataset.data.to(device)
-    
-#     # Initialize model
-#     encoder = GCNEncoder(
-#         in_channels=data.x.size(-1),
-#         hidden_channels=encoder_hidden_channels,
-#         out_channels=encoder_out_channels
-#     )
-#     predictor = EdgePredictor(
-#         in_channels=encoder_out_channels,
-#         hidden_channels=predictor_hidden_channels
-#     )
-#     model = GCNLinkPredictor(encoder, predictor).to(device)
-    
-#     # Initialize optimizer
-#     optimizer = Adam(model.parameters(), lr=learning_rate)
-    
-#     # Training loop
-#     for epoch in range(1, num_epochs + 1):
-#         model.train()
-#         total_loss = 0
-#         for src_features, x_news, labels in tqdm(train_loader, desc=f'Epoch {epoch}/{num_epochs}'):
-#             src_features = src_features.to(device)
-#             x_news = x_news.to(device)
-#             labels = labels.to(device)
-#             optimizer.zero_grad()
-#             # Forward pass
-#             outputs = model.predictor(src_features, x_news)
-#             # Compute loss
-#             loss = F.binary_cross_entropy(outputs, labels)
-#             loss.backward()
-#             optimizer.step()
-#             total_loss += loss.item() * labels.size(0)
-#         avg_loss = total_loss / len(train_loader.dataset)
-#         print(f'Epoch {epoch}, Loss: {avg_loss:.4f}')
-        
-#         # Optionally, evaluate on validation set
-#         # if epoch % config.get('eval_interval', 5) == 0:
-#         #     val_auc = evaluate_model(model, val_loader, device)
-#         #     print(f'Validation AUC: {val_auc:.4f}')
-    
-#     # Save the trained model
-#     model_save_path = config.get('model_save_path', './Models/gcn_link_predictor.pth')
-#     torch.save(model.state_dict(), model_save_path)
-#     print(f'Model saved to {model_save_path}')
-    
-#     return model
-
-# def evaluate_model(model, dataloader, device):
-#     from sklearn.metrics import roc_auc_score
+### NOTE: potentially useful later???
+# def predict_links(model, data, new_paper_embedding=None):
+#     """
+#     Predict links for a new paper or existing graph.
+#     """
 #     model.eval()
-#     preds = []
-#     labels = []
-#     with torch.no_grad():
-#         for src_features, x_news, batch_labels in dataloader:
-#             src_features = src_features.to(device)
-#             x_news = x_news.to(device)
-#             outputs = model.predictor(src_features, x_news)
-#             preds.append(outputs.cpu())
-#             labels.append(batch_labels)
-#     preds = torch.cat(preds)
-#     labels = torch.cat(labels)
-#     auc = roc_auc_score(labels.numpy(), preds.numpy())
-#     return auc
+#     if new_paper_embedding is not None:
+#         new_embedding = torch.tensor(new_paper_embedding, dtype=torch.float).unsqueeze(0)
+#         data.x = torch.cat([data.x, new_embedding], dim=0)
+#         new_node_idx = data.x.size(0) - 1
+#         candidate_edges = torch.tensor([[new_node_idx, i] for i in range(new_node_idx)], dtype=torch.long)
+#     else:
+#         candidate_edges = torch.cartesian_prod(torch.arange(data.num_nodes), torch.arange(data.num_nodes))
 
-# if __name__ == '__main__':
-#     # Load configuration parameters
-#     import yaml
-#     with open('./configs/defaults.yaml', 'r') as f:
-#         config = yaml.safe_load(f)
-#     # Start training
-#     trained_model = train_model(config)
+#     with torch.no_grad():
+#         link_probs = model(data.x, data.edge_index, candidate_edges)
+#     return link_probs
