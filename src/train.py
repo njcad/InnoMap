@@ -4,17 +4,35 @@ from sklearn.metrics import roc_auc_score
 from torch_geometric.loader import NeighborLoader
 from model import GCNLinkPredictor
 from tqdm import tqdm
+import os
 
-def sample_negative_edges(num_nodes, edge_index, num_samples):
-    edge_set = set([tuple(e) for e in edge_index.t().tolist()])
+def sample_subset_negative_edges(graph):
+    """
+    Samples # of negative edges equal to the number of positive edges in the graph.
+
+    Parameters:
+    - graph: PyTorch Geometric Data object.
+    - num_neg_samples: Number of negative edges to sample.
+
+    Returns:
+    - negative_edges: Tensor of sampled negative edges.
+    """
+    num_nodes = graph.num_nodes
+    edge_set = set((u.item(), v.item()) for u, v in graph.edge_index.t())
+
+    size = graph.edge_index.size(1)
     negative_edges = []
-    while len(negative_edges) < num_samples:
-        u, v = torch.randint(0, num_nodes, (2,))
-        if (u.item(), v.item()) not in edge_set and (v.item(), u.item()) not in edge_set and u.item() != v.item():
-            negative_edges.append((u.item(), v.item()))
+    while len(negative_edges) < size:
+        uv = torch.randint(0, num_nodes, (size, 2))
+        uv = uv[uv[:, 0] != uv[:, 1]]  # Remove self-loops
+        for u, v in uv.tolist():
+            if (u, v) not in edge_set and (v, u) not in edge_set:
+                negative_edges.append((u, v))
+                if len(negative_edges) >= size:
+                    break
     return torch.tensor(negative_edges, dtype=torch.long)
 
-def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16, num_neighbors=[10,10]):
+def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16, num_neighbors=[10,10,10,10,5,5], device=torch.device('mps')):
     train_loader = NeighborLoader(
         graph,
         num_neighbors=num_neighbors,
@@ -32,8 +50,8 @@ def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16
         with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/{num_epochs}", unit='batch') as pbar:
             for step, batch_data in enumerate(train_loader):
                 pos_edges = batch_data.edge_index
-                neg_edges = sample_negative_edges(batch_data.num_nodes, pos_edges, pos_edges.size(1))
-                neg_edges = neg_edges.t()
+                neg_edges = sample_subset_negative_edges(batch_data)
+                neg_edges = neg_edges.t().to(device)
 
                 all_edges = torch.cat([pos_edges, neg_edges], dim=1)
                 labels = torch.cat([
@@ -49,7 +67,7 @@ def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16
 
                 # auc = roc_auc_score(labels.cpu().numpy(), link_probs.detach().cpu().numpy())
                 # auc = roc_auc_score(labels.mps().numpy(), link_probs.detach().mps().numpy())
-                auc = roc_auc_score(labels.numpy(), link_probs.detach().numpy())
+                auc = roc_auc_score(labels.cpu().numpy(), link_probs.detach().cpu().numpy())
                 total_loss += loss.item()
                 total_auc += auc
                 count += 1
@@ -65,7 +83,7 @@ def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16
         avg_loss = total_loss / count
         avg_auc = total_auc / count
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}, AUC: {avg_auc:.4f}")
-        checkpoint_path = f"../checkpoints/model_epoch_{epoch+1}.pth"
+        checkpoint_path = f"../new_checkpoints/model_epoch_{epoch+1}.pth"
         torch.save(model.state_dict(), checkpoint_path)
         print(f"Checkpoint saved to {checkpoint_path}")
 
@@ -73,6 +91,10 @@ def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16
     torch.save(model.state_dict(), checkpoint_path)
 
 def main():
+
+    # We need this for the neighbor_sampler to run on MPS (MPS IS SLOW DONT USE IT)
+    # os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+
     torch.manual_seed(42)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(42)
@@ -80,8 +102,8 @@ def main():
     data_path = "../data/graphs/full.pt"
     graph = torch.load(data_path)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # device = torch.device('mps')
+    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    device = torch.device('cpu')
     graph = graph.to(device)
     print(f"Using device: {device}")
 
@@ -95,7 +117,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
     print("Optimizer initialized")
 
-    train_with_neighborloader(model, graph, optimizer, num_epochs=100, batch_size=16, num_neighbors=[10,10])
+    train_with_neighborloader(model, graph, optimizer, num_epochs=100, batch_size=16, num_neighbors=[10,10], device=device)
     print("Training completed")
 
 if __name__ == "__main__":

@@ -22,22 +22,30 @@ class GCNLinkPredictor(torch.nn.Module):
             torch.nn.Sigmoid()
         )
 
+    def get_embeddings(self, x, edge_index):
+        """Get node embeddings from the GCN."""
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
+        x = self.conv2(x, edge_index)
+        return x
+
+    def predict_links(self, source_emb, target_emb):
+        """Predict links given source and target embeddings."""
+        edge_emb = torch.cat([source_emb, target_emb], dim=1)
+        return self.link_predictor(edge_emb)
+
     def forward(self, x, edge_index, node_pairs):
         # Grab the target embeddings FIRST (as the LLM embeddings)
         target_emb = x[node_pairs[:, 1]]
 
-        # GCN layers
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = self.conv2(x, edge_index)
+        # Get embeddings using GCN
+        x = self.get_embeddings(x, edge_index)
 
         # Extract embeddings for node pairs
         source_emb = x[node_pairs[:, 0]]
-        
 
         # Predict link probability
-        edge_emb = torch.cat([source_emb, target_emb], dim=1)
-        link_probs = self.link_predictor(edge_emb)
+        link_probs = self.predict_links(source_emb, target_emb)
         return link_probs
 
 
