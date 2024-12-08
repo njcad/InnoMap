@@ -4,6 +4,7 @@ from torch_geometric.data import Data
 from torch_geometric.loader import NeighborLoader
 from sklearn.model_selection import train_test_split
 
+
 def neighbor_sample_subgraph(data, node_indices, num_hops=2, num_neighbors=10):
     """
     Given a set of node indices, sample their neighborhood to form a subgraph.
@@ -24,6 +25,7 @@ def neighbor_sample_subgraph(data, node_indices, num_hops=2, num_neighbors=10):
     # The 'sampled_data' node indices are mapped to [0, ...], so it's a clean subgraph.
 
     return sampled_data
+
 
 def load_and_neighbor_split(path, test_size=0.2, random_state=42, num_hops=2, num_neighbors=10):
     # Load the full graph
@@ -50,6 +52,7 @@ def load_and_neighbor_split(path, test_size=0.2, random_state=42, num_hops=2, nu
     torch.save(test_graph, "./graphs/test_graph.pt")
 
     return train_graph, test_graph
+
 
 if __name__ == "__main__":
     graph_path = "./graphs/full.pt"

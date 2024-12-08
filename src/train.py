@@ -47,7 +47,9 @@ def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16
                 loss.backward()
                 optimizer.step()
 
-                auc = roc_auc_score(labels.cpu().numpy(), link_probs.detach().cpu().numpy())
+                # auc = roc_auc_score(labels.cpu().numpy(), link_probs.detach().cpu().numpy())
+                # auc = roc_auc_score(labels.mps().numpy(), link_probs.detach().mps().numpy())
+                auc = roc_auc_score(labels.numpy(), link_probs.detach().numpy())
                 total_loss += loss.item()
                 total_auc += auc
                 count += 1
@@ -79,6 +81,7 @@ def main():
     graph = torch.load(data_path)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device('mps')
     graph = graph.to(device)
     print(f"Using device: {device}")
 
