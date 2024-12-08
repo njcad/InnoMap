@@ -2,7 +2,7 @@
 data/*.csv
 data/csvs/*.csv
 data/graphs/*.pt
-
+data/dataset/
 # don't track venv
 venv/
 newVenv/
