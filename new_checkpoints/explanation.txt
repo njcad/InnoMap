@@ -1,0 +1,3 @@
+I tried making it so the neighbor sampler would sample more hops, but idk if its better than before.
+
+I also tried using the MPS backend, but it was slower than the CPU.
