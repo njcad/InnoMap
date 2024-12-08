@@ -6,28 +6,33 @@ from model import GCNLinkPredictor
 from tqdm import tqdm
 import os
 
-def sample_negative_edges(num_nodes, edge_index, num_samples):
-    # Create a dictionary of existing edges for fast lookups
-    edge_dict = {}
-    for u, v in edge_index.t().tolist():
-        edge_dict[(u, v)] = True
-        edge_dict[(v, u)] = True  # Account for undirected edges (if applicable)
+def sample_subset_negative_edges(graph):
+    """
+    Samples # of negative edges equal to the number of positive edges in the graph.
 
+    Parameters:
+    - graph: PyTorch Geometric Data object.
+    - num_neg_samples: Number of negative edges to sample.
+
+    Returns:
+    - negative_edges: Tensor of sampled negative edges.
+    """
+    num_nodes = graph.num_nodes
+    edge_set = set((u.item(), v.item()) for u, v in graph.edge_index.t())
+
+    size = graph.edge_index.size(1)
     negative_edges = []
-    while len(negative_edges) < num_samples:
-        # Generate a batch of random pairs
-        uv = torch.randint(0, num_nodes, (num_samples, 2))
-        
-        # Filter out invalid pairs (u == v) and already existing edges
+    while len(negative_edges) < size:
+        uv = torch.randint(0, num_nodes, (size, 2))
+        uv = uv[uv[:, 0] != uv[:, 1]]  # Remove self-loops
         for u, v in uv.tolist():
-            if u != v and not edge_dict.get((u, v), False):
+            if (u, v) not in edge_set and (v, u) not in edge_set:
                 negative_edges.append((u, v))
-                if len(negative_edges) >= num_samples:
+                if len(negative_edges) >= size:
                     break
-
     return torch.tensor(negative_edges, dtype=torch.long)
 
-def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16, num_neighbors=[10,10,10,10], device=torch.device('mps')):
+def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16, num_neighbors=[10,10,10,10,5,5], device=torch.device('mps')):
     train_loader = NeighborLoader(
         graph,
         num_neighbors=num_neighbors,
@@ -45,7 +50,7 @@ def train_with_neighborloader(model, graph, optimizer, num_epochs, batch_size=16
         with tqdm(total=len(train_loader), desc=f"Epoch {epoch+1}/{num_epochs}", unit='batch') as pbar:
             for step, batch_data in enumerate(train_loader):
                 pos_edges = batch_data.edge_index
-                neg_edges = sample_negative_edges(batch_data.num_nodes, pos_edges, pos_edges.size(1))
+                neg_edges = sample_subset_negative_edges(batch_data)
                 neg_edges = neg_edges.t().to(device)
 
                 all_edges = torch.cat([pos_edges, neg_edges], dim=1)

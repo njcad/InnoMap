@@ -1,5 +1,4 @@
-# src/dataset.py
-
+#UNUSED FILE!!!!
 import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import remove_isolated_nodes

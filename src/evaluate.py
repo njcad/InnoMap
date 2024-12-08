@@ -10,18 +10,19 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from model import GCNLinkPredictor
 from examples import startup_abstracts
+from tqdm import tqdm
 
 
 # Ensure results directory exists
 os.makedirs("./results", exist_ok=True)
 
 # ---- CONFIG ----
-MODEL_CHECKPOINT = "../new_checkpoints/model_epoch_2.pth"  # adjust as needed
+MODEL_CHECKPOINT = "../new_checkpoints/model_epoch_1.pth"  # adjust as needed
 GRAPH_TRAIN_PATH = "../data/graphs/full.pt"
 GRAPH_EVAL_PATH = "../data/graphs/eval_graph.pt"
-DEVICE = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
-NUM_NEG_SAMPLES = 100  # Adjust as needed for performance
+DEVICE = 'cpu' #torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
 DATA_CLEAN_PATH = "../data/data_clean.csv"  # Path to the CSV used to create the train graph
+# NUM_NEG_SAMPLES = 100  # Adjust as needed for performance
 
 
 def load_graph(path):
@@ -35,36 +36,46 @@ def load_model(model_path, in_channels, hidden_channels=64, out_channels=32):
     model.eval()
     return model
 
-def sample_negative_edges(num_nodes, edge_index, num_samples):
-    # Create a dictionary of existing edges for fast lookups
-    edge_dict = {}
-    for u, v in edge_index.t().tolist():
-        edge_dict[(u, v)] = True
-        edge_dict[(v, u)] = True  # Account for undirected edges (if applicable)
 
+def sample_subset_negative_edges(graph):
+    """
+    Samples # of negative edges equal to the number of positive edges in the graph.
+
+    Parameters:
+    - graph: PyTorch Geometric Data object.
+    - num_neg_samples: Number of negative edges to sample.
+
+    Returns:
+    - negative_edges: Tensor of sampled negative edges.
+    """
+    num_nodes = graph.num_nodes
+    edge_set = set((u.item(), v.item()) for u, v in graph.edge_index.t())
+
+    size = graph.edge_index.size(1)
     negative_edges = []
-    while len(negative_edges) < num_samples:
-        # Generate a batch of random pairs
-        uv = torch.randint(0, num_nodes, (num_samples, 2))
-        
-        # Filter out invalid pairs (u == v) and already existing edges
-        for u, v in uv.tolist():
-            if u != v and not edge_dict.get((u, v), False):
-                negative_edges.append((u, v))
-                if len(negative_edges) >= num_samples:
-                    break
+    with tqdm(total=size, desc="Sampling negative edges", unit="edge") as pbar:
+        while len(negative_edges) < size:
+            uv = torch.randint(0, num_nodes, (size, 2))
+            uv = uv[uv[:, 0] != uv[:, 1]]  # Remove self-loops
+            for u, v in uv.tolist():
+                if (u, v) not in edge_set and (v, u) not in edge_set:
+                    negative_edges.append((u, v))
+                    pbar.update(1)
+                    if len(negative_edges) >= size:
+                        break
 
     return torch.tensor(negative_edges, dtype=torch.long)
 
 
-def get_sampled_predictions(model, graph, num_neg_samples=NUM_NEG_SAMPLES):
+
+def get_sampled_predictions(model, graph, batch_size=10000):
     print("\nGetting sampled predictions")
 
     # Positive edges (existing edges in the graph)
     pos_edges = graph.edge_index.t()  # shape [num_edges, 2]
     print(f"Positive edges: {pos_edges.shape}")
     # Sample a set of negative edges
-    neg_edges = sample_negative_edges(graph.num_nodes, graph.edge_index, num_neg_samples).to(DEVICE)
+    neg_edges = sample_subset_negative_edges(graph).to(DEVICE)
 
     # Combine positive and negative edges
     all_edges = torch.cat([pos_edges, neg_edges], dim=0).to(DEVICE)
@@ -72,11 +83,20 @@ def get_sampled_predictions(model, graph, num_neg_samples=NUM_NEG_SAMPLES):
         torch.ones(pos_edges.size(0), dtype=torch.float, device=DEVICE),
         torch.zeros(neg_edges.size(0), dtype=torch.float, device=DEVICE)
     ])
-    print("Making predicitons for part 1 (labels were created)")
-    # Make predictions
+    print("Making predictions for part 1 (labels were created)")
+
+    # Make predictions in batches
+    link_probs = []
     with torch.no_grad():
-        link_probs = model(graph.x, graph.edge_index, all_edges)
-    return all_edges.cpu(), link_probs.cpu(), labels.cpu()
+        with tqdm(total=all_edges.size(0), desc="Predicting link probabilities", unit="batch") as pbar:
+            for i in range(0, all_edges.size(0), batch_size):
+                batch_edges = all_edges[i:i+batch_size]
+                batch_probs = model(graph.x, graph.edge_index, batch_edges)
+                link_probs.append(batch_probs.cpu())
+                pbar.update(batch_size)
+
+    link_probs = torch.cat(link_probs)
+    return all_edges.cpu(), link_probs, labels.cpu()
 
 def save_confusion_matrix(y_true, y_pred, filepath_csv, filepath_png):
     print("\nSaving confusion matrix to:", filepath_csv)
@@ -117,19 +137,21 @@ def predict_edges_for_new_embeddings(model, graph_embeddings, new_embeddings, to
     num_nodes = graph_embeddings.size(0)
 
     with torch.no_grad():
-        for idx, emb in enumerate(new_embeddings):
-            emb = emb.unsqueeze(0).to(DEVICE)  
-            src_emb = graph_embeddings.to(DEVICE)
-            target_emb = emb.repeat(num_nodes, 1)  
-            link_probs = model.predict_links(src_emb, target_emb).squeeze()
+        with tqdm(total=len(new_embeddings), desc="Predicting edges for new embeddings", unit="embedding") as pbar:
+            for idx, emb in enumerate(new_embeddings):
+                emb = emb.unsqueeze(0).to(DEVICE)  
+                src_emb = graph_embeddings.to(DEVICE)
+                target_emb = emb.repeat(num_nodes, 1)  
+                link_probs = model.predict_links(src_emb, target_emb).squeeze()
 
-            probs = link_probs.cpu().numpy()
-            sorted_indices = np.argsort(-probs)  # descending order
+                probs = link_probs.cpu().numpy()
+                sorted_indices = np.argsort(-probs)  # descending order
 
-            top_nodes = sorted_indices[:top_k]
-            top_probs = probs[top_nodes]
-            res = list(zip(top_nodes.tolist(), top_probs.tolist()))
-            results.append((idx, res))
+                top_nodes = sorted_indices[:top_k]
+                top_probs = probs[top_nodes]
+                res = list(zip(top_nodes.tolist(), top_probs.tolist()))
+                results.append((idx, res))
+                pbar.update(1)
     return results
 
 def main():
